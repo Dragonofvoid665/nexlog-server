@@ -1,0 +1,8 @@
+github.com/golang-jwt/jwt/v5 v5.2.0 h1:d1l6KCTOqjEjCwl/iBHgX5b9Yxsop5HE9gL6Q6kQ6rU=
+github.com/golang-jwt/jwt/v5 v5.2.0/go.mod h1:pqrtFR0X4osieyHYxtmOUWsAWrfe1Q5UVIyoH402zdk=
+github.com/mattn/go-sqlite3 v1.14.19 h1:fhGleo2h1p8tVChob4I9HpmVFIAkKGpiukdrgQbWfGI=
+github.com/mattn/go-sqlite3 v1.14.19/go.mod h1:2eHXhiwb9IkHr/5C0Ed/cue9+yjEFTzLBkCYvJm0tfI=
+golang.org/x/crypto v0.19.0 h1:ENy+Az/9Y1vSrlrvBSyna3PITt4tiZLwo7zrHMK6o/Vs=
+golang.org/x/crypto v0.19.0/go.mod h1:Iy9bg/ha4yyC70EfRS8jkl4/03vkWkByxoe/ph68tr0=
+golang.org/x/sys v0.17.0 h1:25cE3gD+tdBA7lp7QfhuV+rJiE9YXTcS3VG1SqssI/Y=
+golang.org/x/sys v0.17.0/go.mod h1:/VUhepiaJMbufO0a2Ej8c98dFaNFdR/4iQ9J11+6UDTU=

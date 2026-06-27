@@ -1,0 +1,43 @@
+version: "3.9"
+
+services:
+  nexlog:
+    build: .
+    image: nexlog:latest
+    container_name: nexlog
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - nexlog_data:/app/data
+      - nexlog_uploads:/app/public/uploads
+    environment:
+      - PORT=3000
+      - DATA_DIR=/app/data
+      - PUBLIC_DIR=/app/public
+      - JWT_SECRET=${JWT_SECRET:-change_me_in_production_use_random_string}
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1800M
+        reservations:
+          cpus: "0.5"
+          memory: 256M
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/content"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+volumes:
+  nexlog_data:
+    driver: local
+  nexlog_uploads:
+    driver: local
