@@ -23,15 +23,13 @@ WORKDIR /app
 COPY --from=builder /app/nexlog-server .
 COPY public/ ./public/
 
-# Data volume for persistent DB + uploads
-VOLUME ["/app/data", "/app/public/uploads"]
+RUN mkdir -p /app/data /app/public/uploads \
+    && chmod -R 777 /app/data /app/public/uploads
 
 ENV PORT=3000
 ENV DATA_DIR=/app/data
 ENV PUBLIC_DIR=/app/public
 
 EXPOSE 3000
-
-USER nobody
 
 CMD ["./nexlog-server"]
