@@ -105,49 +105,33 @@ func (db *DB) Init() error {
 	if _, err := db.Exec(schema); err != nil {
 		return err
 	}
-	return db.seed()
+	if err := db.seed(); err != nil {
+		return err
+	}
+	return db.migrateLanguages()
 }
 
-func (db *DB) seed() error {
-	var count int
-	if err := db.QueryRow("SELECT COUNT(*) FROM site").Scan(&count); err != nil {
-		return err
+func (db *DB) migrateLanguages() error {
+	newLangs := defaultLanguages()
+	for code, lang := range newLangs {
+		var count int
+		db.QueryRow("SELECT COUNT(*) FROM languages WHERE code=?", code).Scan(&count)
+		if count > 0 {
+			continue // уже есть — не трогаем
+		}
+		log.Printf("🌐 Adding missing language: %s (%s)", code, lang["name"])
+		flag := lang["flag"]
+		name := lang["name"]
+		delete(lang, "flag")
+		delete(lang, "name")
+		data, _ := json.Marshal(lang)
+		db.Exec("INSERT INTO languages (code,data,flag,name) VALUES (?,?,?,?)", code, string(data), flag, name)
 	}
-	if count > 0 {
-		return nil
-	}
-	log.Println("📦 First init, seeding default data...")
+	return nil
+}
 
-	tx, err := db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-
-	tx.Exec("INSERT INTO site (id, companyName, tagline) VALUES (1,'NexLog Global','Connecting the World, Delivering Excellence')")
-
-	hash, _ := bcrypt.GenerateFromPassword([]byte("password"), bcrypt.DefaultCost)
-	tx.Exec("INSERT INTO admin_password (id, hash) VALUES (1, ?)", string(hash))
-
-	tx.Exec("INSERT INTO hero_slides (title,subtitle,image,buttonText,buttonLink,sort_order) VALUES (?,?,?,?,?,?)",
-		"Global Logistics Solutions", "Fast, Reliable & Trusted Worldwide", "/uploads/placeholder.jpg", "Explore", "#contact", 0)
-
-	defaultStats := [][]string{
-		{"🚛", "150+", "Countries Served"},
-		{"📦", "50K+", "Shipments/Month"},
-		{"👥", "200+", "Team Members"},
-		{"⭐", "98%", "Client Satisfaction"},
-		{"🏆", "20+", "Years Experience"},
-	}
-	for i, s := range defaultStats {
-		tx.Exec("INSERT INTO stats (icon,value,label,sort_order) VALUES (?,?,?,?)", s[0], s[1], s[2], i)
-	}
-
-	tx.Exec("INSERT INTO about (id,title,description,image) VALUES (1,'About Us','We are a leading global logistics provider with over 20 years of experience.','/uploads/placeholder.jpg')")
-
-	tx.Exec("INSERT INTO contact (id,address,phone,email,whatsapp) VALUES (1,'123 Logistics St, Global City','+1234567890','hello@nexlog.com','+1234567890')")
-
-	defaultLangs := map[string]map[string]string{
+func defaultLanguages() map[string]map[string]string {
+	return map[string]map[string]string{
 		"en": {
 			"flag": "🇬🇧", "name": "English",
 			"nav_home": "Home", "nav_about": "About", "nav_services": "Services", "nav_news": "News", "nav_quote": "Get Quote",
@@ -204,8 +188,48 @@ func (db *DB) seed() error {
 			"footer_careers": "招聘", "footer_news": "新闻", "footer_contact": "联系我们", "years": "年",
 		},
 	}
+}
 
-	for code, lang := range defaultLangs {
+func (db *DB) seed() error {
+	var count int
+	if err := db.QueryRow("SELECT COUNT(*) FROM site").Scan(&count); err != nil {
+		return err
+	}
+	if count > 0 {
+		return nil
+	}
+	log.Println("📦 First init, seeding default data...")
+
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	tx.Exec("INSERT INTO site (id, companyName, tagline) VALUES (1,'NexLog Global','Connecting the World, Delivering Excellence')")
+
+	hash, _ := bcrypt.GenerateFromPassword([]byte("password"), bcrypt.DefaultCost)
+	tx.Exec("INSERT INTO admin_password (id, hash) VALUES (1, ?)", string(hash))
+
+	tx.Exec("INSERT INTO hero_slides (title,subtitle,image,buttonText,buttonLink,sort_order) VALUES (?,?,?,?,?,?)",
+		"Global Logistics Solutions", "Fast, Reliable & Trusted Worldwide", "/uploads/placeholder.jpg", "Explore", "#contact", 0)
+
+	defaultStats := [][]string{
+		{"🚛", "150+", "Countries Served"},
+		{"📦", "50K+", "Shipments/Month"},
+		{"👥", "200+", "Team Members"},
+		{"⭐", "98%", "Client Satisfaction"},
+		{"🏆", "20+", "Years Experience"},
+	}
+	for i, s := range defaultStats {
+		tx.Exec("INSERT INTO stats (icon,value,label,sort_order) VALUES (?,?,?,?)", s[0], s[1], s[2], i)
+	}
+
+	tx.Exec("INSERT INTO about (id,title,description,image) VALUES (1,'About Us','We are a leading global logistics provider with over 20 years of experience.','/uploads/placeholder.jpg')")
+
+	tx.Exec("INSERT INTO contact (id,address,phone,email,whatsapp) VALUES (1,'123 Logistics St, Global City','+1234567890','hello@nexlog.com','+1234567890')")
+
+	for code, lang := range defaultLanguages() {
 		flag := lang["flag"]
 		name := lang["name"]
 		delete(lang, "flag")
