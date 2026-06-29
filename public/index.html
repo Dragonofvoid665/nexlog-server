@@ -187,9 +187,21 @@
 
   async function loadContent() {
     try {
-      const res = await fetch('/api/content');
-      content = await res.json();
+      const [contentRes, langRes] = await Promise.all([
+        fetch('/api/content'),
+        fetch('/api/languages')
+      ]);
+      content = await contentRes.json();
+      const serverLangs = await langRes.json();
+      if (serverLangs && typeof serverLangs === 'object' && Object.keys(serverLangs).length > 0) {
+        i18n = serverLangs;
+        // fill missing keys from DEFAULT_EN
+        for (let lang in i18n) for (let key in DEFAULT_EN) if (!i18n[lang][key]) i18n[lang][key] = DEFAULT_EN[key];
+        if (!i18n[currentLang]) currentLang = 'en';
+        localStorage.setItem('nexlog_languages', JSON.stringify(i18n));
+      }
       renderAll();
+      buildLangDropdown();
     } catch(e) { console.error(e); } finally {
       setTimeout(() => document.getElementById('loader').classList.add('hidden'), 800);
     }
