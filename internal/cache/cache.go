@@ -1,3 +1,5 @@
+// Package cache provides a lightweight in-memory TTL cache backed by sync.Map.
+// Safe for concurrent use; suitable for caching CMS data (30s TTL typical).
 package cache
 
 import (
@@ -11,26 +13,26 @@ type entry struct {
 }
 
 type Cache struct {
-	mu   sync.RWMutex
-	data map[string]entry
-	ttl  time.Duration
+	mu  sync.RWMutex
+	m   map[string]entry
+	ttl time.Duration
 }
 
 func New(ttl time.Duration) *Cache {
-	c := &Cache{data: make(map[string]entry), ttl: ttl}
+	c := &Cache{m: make(map[string]entry), ttl: ttl}
 	go c.evict()
 	return c
 }
 
 func (c *Cache) Set(key string, val interface{}) {
 	c.mu.Lock()
-	c.data[key] = entry{value: val, expiresAt: time.Now().Add(c.ttl)}
+	c.m[key] = entry{value: val, expiresAt: time.Now().Add(c.ttl)}
 	c.mu.Unlock()
 }
 
 func (c *Cache) Get(key string) (interface{}, bool) {
 	c.mu.RLock()
-	e, ok := c.data[key]
+	e, ok := c.m[key]
 	c.mu.RUnlock()
 	if !ok || time.Now().After(e.expiresAt) {
 		return nil, false
@@ -40,7 +42,7 @@ func (c *Cache) Get(key string) (interface{}, bool) {
 
 func (c *Cache) Flush() {
 	c.mu.Lock()
-	c.data = make(map[string]entry)
+	c.m = make(map[string]entry)
 	c.mu.Unlock()
 }
 
@@ -49,9 +51,9 @@ func (c *Cache) evict() {
 	for range t.C {
 		now := time.Now()
 		c.mu.Lock()
-		for k, e := range c.data {
+		for k, e := range c.m {
 			if now.After(e.expiresAt) {
-				delete(c.data, k)
+				delete(c.m, k)
 			}
 		}
 		c.mu.Unlock()

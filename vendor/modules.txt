@@ -2,6 +2,19 @@
 ## explicit; go 1.18
 github.com/golang-jwt/jwt/v5
 github.com/golang-jwt/jwt/v5/request
+# github.com/lib/pq v1.10.9
+## explicit; go 1.22
+github.com/lib/pq
+github.com/lib/pq/hstore
+github.com/lib/pq/internal/pgpass
+github.com/lib/pq/internal/pgservice
+github.com/lib/pq/internal/pqsql
+github.com/lib/pq/internal/pqtime
+github.com/lib/pq/internal/pqutil
+github.com/lib/pq/internal/proto
+github.com/lib/pq/oid
+github.com/lib/pq/pqerror
+github.com/lib/pq/scram
 # github.com/mattn/go-sqlite3 v1.14.19
 ## explicit; go 1.19
 github.com/mattn/go-sqlite3
@@ -12,3 +25,6 @@ golang.org/x/crypto/blowfish
 # golang.org/x/sys v0.17.0
 ## explicit; go 1.18
 golang.org/x/sys/unix
+# golang.org/x/time v0.5.0
+## explicit; go 1.18
+golang.org/x/time/rate

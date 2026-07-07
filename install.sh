@@ -1,90 +1,79 @@
 #!/bin/bash
 # ============================================================
-#  NexLog — установка на Arch Linux
-#  Использование: sudo bash install.sh
+#  NexLog — Production install (Arch Linux + PostgreSQL)
+#  Usage: sudo bash install.sh
 # ============================================================
 set -euo pipefail
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
 info()    { echo -e "${BLUE}[INFO]${NC} $*"; }
-success() { echo -e "${GREEN}[OK]${NC}  $*"; }
+success() { echo -e "${GREEN}[OK]${NC}   $*"; }
 warn()    { echo -e "${YELLOW}[WARN]${NC} $*"; }
-error()   { echo -e "${RED}[ERROR]${NC} $*"; exit 1; }
+error()   { echo -e "${RED}[ERR]${NC}  $*"; exit 1; }
 
-[[ $EUID -ne 0 ]] && error "Запусти от root: sudo bash install.sh"
+[[ $EUID -ne 0 ]] && error "Run as root: sudo bash install.sh"
 
 DOMAIN="${DOMAIN:-}"
 INSTALL_DIR="/opt/nexlog"
 JWT_SECRET=$(openssl rand -hex 32)
-APP_USER="nexlog"
+PG_PASS=$(openssl rand -hex 20)
 
 echo ""
-echo "╔══════════════════════════════════════════╗"
-echo "║   NexLog Go Production Installer        ║"
-echo "║   Arch Linux                             ║"
-echo "╚══════════════════════════════════════════╝"
+echo "╔══════════════════════════════════════════════╗"
+echo "║   NexLog — Arch Linux Production Installer  ║"
+echo "╚══════════════════════════════════════════════╝"
 echo ""
 
-# ─── 1. Пакеты через pacman ──────────────────────────────
-info "Обновление системы и установка пакетов..."
+# 1. Packages
+info "Installing packages..."
 pacman -Sy --noconfirm --needed \
-    docker docker-compose \
-    nginx certbot certbot-nginx \
-    ufw fail2ban \
-    curl wget unzip openssl
-success "Пакеты установлены"
-
-# ─── 2. Docker ────────────────────────────────────────────
-info "Запуск Docker..."
+    docker docker-compose nginx certbot certbot-nginx \
+    ufw fail2ban curl wget unzip openssl
 systemctl enable --now docker
-success "Docker запущен"
+success "Packages installed"
 
-# ─── 3. Пользователь ─────────────────────────────────────
-if ! id "$APP_USER" &>/dev/null; then
-    info "Создание системного пользователя: $APP_USER"
-    useradd -r -s /usr/bin/nologin -d "$INSTALL_DIR" "$APP_USER"
-    usermod -aG docker "$APP_USER"
+# 2. User
+if ! id nexlog &>/dev/null; then
+    useradd -r -s /usr/bin/nologin -d "$INSTALL_DIR" nexlog
+    usermod -aG docker nexlog
 fi
 
-# ─── 4. Директории ───────────────────────────────────────
-info "Создание директорий..."
-mkdir -p "$INSTALL_DIR"/{data,public/uploads,logs}
-
-# Копируем файлы проекта из текущей папки
+# 3. Dirs
+mkdir -p "$INSTALL_DIR/public/uploads"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cp -r "$SCRIPT_DIR"/* "$INSTALL_DIR/" 2>/dev/null || true
-chown -R "$APP_USER:$APP_USER" "$INSTALL_DIR"
+chown -R nexlog:nexlog "$INSTALL_DIR"
 
-# ─── 5. .env файл ─────────────────────────────────────────
-info "Создание .env..."
-cat > "$INSTALL_DIR/.env" << EOF
+# 4. .env
+cat > "$INSTALL_DIR/.env" << ENV
+POSTGRES_PASSWORD=$PG_PASS
 JWT_SECRET=$JWT_SECRET
 PORT=3000
-DATA_DIR=/app/data
+APP_ENV=production
 PUBLIC_DIR=/app/public
-EOF
+MIGRATIONS_DIR=/app/migrations
+DB_MAX_OPEN=50
+DB_MAX_IDLE=25
+RATE_LIMIT_PER_MIN=120
+ENV
 chmod 600 "$INSTALL_DIR/.env"
-success ".env создан (JWT secret сгенерирован)"
+success ".env created (secrets auto-generated)"
 
-# ─── 6. Сборка Docker образа ─────────────────────────────
-info "Сборка Docker образа (1-3 мин)..."
+# 5. Docker build & start
+info "Building Docker image..."
 cd "$INSTALL_DIR"
 docker compose build --no-cache
-success "Образ собран"
-
-# ─── 7. Запуск ────────────────────────────────────────────
-info "Запуск контейнера..."
 docker compose up -d
-sleep 3
+sleep 5
 
-if docker compose ps | grep -qE "running|Up"; then
-    success "Контейнер запущен!"
+if docker compose ps | grep -qE "running|Up|healthy"; then
+    success "Containers running"
 else
-    error "Контейнер не запустился. Смотри: docker compose logs"
+    error "Container failed — check: docker compose logs"
 fi
 
-# ─── 8. Firewall (ufw) ───────────────────────────────────
-info "Настройка UFW..."
+# 6. Firewall
+info "Configuring UFW..."
 ufw --force reset
 ufw default deny incoming
 ufw default allow outgoing
@@ -92,56 +81,53 @@ ufw allow ssh
 ufw allow 80/tcp
 ufw allow 443/tcp
 ufw --force enable
-success "Firewall настроен (22, 80, 443)"
+success "Firewall: 22, 80, 443 open"
 
-# ─── 9. Fail2ban ─────────────────────────────────────────
-info "Настройка fail2ban..."
-cat > /etc/fail2ban/jail.local << 'EOF'
+# 7. Fail2ban
+cat > /etc/fail2ban/jail.local << 'F2B'
 [DEFAULT]
 bantime  = 3600
 findtime = 600
 maxretry = 5
-
 [sshd]
 enabled = true
-
 [nginx-http-auth]
 enabled = true
-EOF
+F2B
 systemctl enable --now fail2ban
-success "Fail2ban настроен"
+success "Fail2ban active"
 
-# ─── 10. Nginx ───────────────────────────────────────────
-info "Настройка Nginx..."
+# 8. Nginx
 mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled
-
-# Arch nginx не включает sites-enabled по умолчанию — добавляем
-if ! grep -q "sites-enabled" /etc/nginx/nginx.conf; then
+grep -q "sites-enabled" /etc/nginx/nginx.conf || \
     sed -i '/http {/a\    include /etc/nginx/sites-enabled/*;' /etc/nginx/nginx.conf
-fi
 
-cat > /etc/nginx/sites-available/nexlog << 'NGINXEOF'
+NGINX_CONF="/etc/nginx/sites-available/nexlog"
+cat > "$NGINX_CONF" << 'NGINX'
 upstream nexlog_backend {
     server 127.0.0.1:3000;
     keepalive 64;
 }
-
-limit_req_zone $binary_remote_addr zone=api:10m rate=30r/m;
+limit_req_zone $binary_remote_addr zone=api:10m rate=60r/m;
 limit_conn_zone $binary_remote_addr zone=conn:10m;
 
 server {
     listen 80;
     server_name _;
-
     client_max_body_size 10M;
-    limit_conn conn 100;
+    limit_conn conn 200;
 
     gzip on;
     gzip_types text/plain text/css application/json application/javascript;
     gzip_min_length 1000;
 
+    location /uploads/ {
+        proxy_pass http://nexlog_backend;
+        proxy_cache_valid 200 7d;
+        add_header Cache-Control "public, max-age=604800, immutable";
+    }
     location /api/ {
-        limit_req zone=api burst=20 nodelay;
+        limit_req zone=api burst=30 nodelay;
         proxy_pass http://nexlog_backend;
         proxy_http_version 1.1;
         proxy_set_header Connection "";
@@ -152,7 +138,6 @@ server {
         proxy_read_timeout 30s;
         proxy_connect_timeout 5s;
     }
-
     location / {
         proxy_pass http://nexlog_backend;
         proxy_http_version 1.1;
@@ -162,31 +147,28 @@ server {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
     }
-
     add_header X-Frame-Options SAMEORIGIN always;
     add_header X-Content-Type-Options nosniff always;
 }
-NGINXEOF
+NGINX
 
-ln -sf /etc/nginx/sites-available/nexlog /etc/nginx/sites-enabled/nexlog
-
+ln -sf "$NGINX_CONF" /etc/nginx/sites-enabled/nexlog
 nginx -t && systemctl enable --now nginx && systemctl reload nginx
-success "Nginx настроен"
+success "Nginx configured"
 
-# ─── 11. SSL (если задан домен) ──────────────────────────
+# 9. SSL
 if [[ -n "$DOMAIN" ]]; then
-    info "Установка SSL для $DOMAIN..."
-    sed -i "s/server_name _;/server_name $DOMAIN;/" /etc/nginx/sites-available/nexlog
+    info "Installing SSL for $DOMAIN..."
+    sed -i "s/server_name _;/server_name $DOMAIN;/" "$NGINX_CONF"
     nginx -t && systemctl reload nginx
     certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos -m "admin@$DOMAIN"
-    success "SSL установлен для $DOMAIN"
+    success "SSL installed for $DOMAIN"
 else
-    warn "DOMAIN не задан — SSL пропущен. Позже: DOMAIN=example.com bash install.sh"
+    warn "DOMAIN not set — SSL skipped. Run: DOMAIN=example.com bash install.sh"
 fi
 
-# ─── 12. Systemd сервис ───────────────────────────────────
-info "Создание systemd сервиса..."
-cat > /etc/systemd/system/nexlog.service << EOF
+# 10. Systemd service
+cat > /etc/systemd/system/nexlog.service << SVC
 [Unit]
 Description=NexLog Logistics CMS
 After=docker.service network-online.target
@@ -202,25 +184,23 @@ TimeoutStartSec=120
 
 [Install]
 WantedBy=multi-user.target
-EOF
-
+SVC
 systemctl daemon-reload
 systemctl enable nexlog
-success "Systemd сервис создан (автозапуск при перезагрузке)"
+success "Systemd service: nexlog"
 
-# ─── Итог ─────────────────────────────────────────────────
-IP=$(ip route get 1 | awk '{print $7; exit}' 2>/dev/null || echo "your-server-ip")
+IP=$(ip route get 1 | awk '{print $7; exit}' 2>/dev/null || echo "YOUR_SERVER_IP")
 echo ""
 echo "╔══════════════════════════════════════════════════╗"
-echo "║          ✅ Установка завершена!                 ║"
+echo "║         ✅ Installation complete!                ║"
 echo "╠══════════════════════════════════════════════════╣"
-echo "║  🌐 Сайт:    http://$IP"
-echo "║  🔧 Админ:   http://$IP/admin"
-echo "║  🔑 Пароль:  password  (смени немедленно!)"
+echo "║  🌐  Site:   http://$IP"
+echo "║  🔧  Admin:  http://$IP/admin"
+echo "║  🔑  Password: password  ← CHANGE IMMEDIATELY"
 echo "╠══════════════════════════════════════════════════╣"
-echo "║  Команды:"
+echo "║  Commands:"
 echo "║  docker compose -f $INSTALL_DIR/docker-compose.yml logs -f"
 echo "║  docker compose -f $INSTALL_DIR/docker-compose.yml restart"
 echo "╚══════════════════════════════════════════════════╝"
 echo ""
-warn "⚠️  Смени пароль в /admin → Security сразу после входа!"
+warn "⚠️  Change admin password at /admin → Security tab!"

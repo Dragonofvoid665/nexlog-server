@@ -2,108 +2,119 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
-	"log"
-	"net"
 	"net/http"
+	_ "net/http/pprof" // registers /debug/pprof automatically
 	"os"
 	"os/signal"
-	"path/filepath"
 	"runtime"
 	"syscall"
 	"time"
 
+	"nexlog/configs"
+	appdb "nexlog/internal/db"
 	"nexlog/internal/cache"
-	"nexlog/internal/db"
 	"nexlog/internal/handlers"
+	"nexlog/internal/logger"
+	"nexlog/internal/migrate"
+	mw "nexlog/internal/middleware"
+	"nexlog/internal/repository"
+	"nexlog/internal/service"
 )
 
 func main() {
-	// Optimise for 2 cores
-	runtime.GOMAXPROCS(runtime.NumCPU())
-	log.Printf("🔧 GOMAXPROCS=%d", runtime.GOMAXPROCS(0))
-
-	// Config from env (with sane defaults)
-	port := getEnv("PORT", "3000")
-	jwtSecret := getEnv("JWT_SECRET", generateSecret())
-	dataDir := getEnv("DATA_DIR", "./data")
-	publicDir := getEnv("PUBLIC_DIR", "./public")
-	uploadDir := filepath.Join(publicDir, "uploads")
-
-	// Database
-	database, err := db.Open(dataDir)
+	// ─── Config ──────────────────────────────────────────────────────────────
+	cfg, err := configs.Load()
 	if err != nil {
-		log.Fatalf("❌ DB open failed: %v", err)
-	}
-	defer database.Close()
-	if err := database.Init(); err != nil {
-		log.Fatalf("❌ DB init failed: %v", err)
+		// Do NOT start without valid config — especially without JWT_SECRET
+		logger.Init(true)
+		logger.Error("❌ Config error", "err", err)
+		os.Exit(1)
 	}
 
-	// Cache: 30s TTL
+	logger.Init(cfg.IsDev)
+	runtime.GOMAXPROCS(runtime.NumCPU())
+	logger.Info("🔧 Go runtime", "GOMAXPROCS", runtime.GOMAXPROCS(0))
+
+	// ─── Database ─────────────────────────────────────────────────────────────
+	db, err := appdb.Open(cfg)
+	if err != nil {
+		logger.Error("❌ DB open failed", "err", err)
+		os.Exit(1)
+	}
+	defer db.Close()
+
+	// ─── Migrations ───────────────────────────────────────────────────────────
+	if err := migrate.Run(db, cfg.MigrationsDir); err != nil {
+		logger.Error("❌ Migration failed", "err", err)
+		os.Exit(1)
+	}
+
+	// ─── Layers ───────────────────────────────────────────────────────────────
+	repo := repository.New(db)
+	svc := service.New(repo, db)
 	appCache := cache.New(30 * time.Second)
 
-	// Handlers + routes
-	h := handlers.New(database, appCache, jwtSecret, uploadDir)
+	ctx := context.Background()
+	if err := svc.SeedIfEmpty(ctx); err != nil {
+		logger.Error("❌ Seed failed", "err", err)
+		os.Exit(1)
+	}
 
+	h := handlers.New(svc, appCache, cfg.JWTSecret, cfg.UploadDir)
+
+	// ─── Router ───────────────────────────────────────────────────────────────
 	mux := http.NewServeMux()
-	h.RegisterRoutes(mux, publicDir)
+	authMiddleware := mw.Auth(cfg.JWTSecret)
+	h.RegisterRoutes(mux, authMiddleware, cfg.PublicDir)
 
-	// Middleware stack: rate limit → security headers → compress → mux
-	handler := rateLimitMiddleware(
-		securityHeaders(
-			gzipMiddleware(mux),
+	if cfg.EnablePprof {
+		// pprof is auto-registered to DefaultServeMux — expose on separate port
+		go func() {
+			logger.Info("🔬 pprof listening on :6060")
+			http.ListenAndServe(":6060", nil)
+		}()
+	}
+
+	// ─── Middleware stack ─────────────────────────────────────────────────────
+	rl := mw.NewRateLimiter(cfg.RateLimitPerMin)
+	handler := rl.Middleware(
+		mw.CORS(cfg.AllowedOrigins)(
+			mw.SecurityHeaders(
+				mw.Gzip(mux),
+			),
 		),
-		100,              // max requests per window per IP
-		15*time.Minute,  // window
 	)
 
-	// HTTP server tuned for 10k concurrent connections on 2GB RAM
+	// ─── HTTP Server ─────────────────────────────────────────────────────────
 	srv := &http.Server{
-		Addr:         ":" + port,
+		Addr:         ":" + cfg.Port,
 		Handler:      handler,
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 30 * time.Second,
 		IdleTimeout:  120 * time.Second,
-		// Allow efficient handling of many connections
-		ConnState: func(conn net.Conn, state http.ConnState) {},
+		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	// Graceful shutdown
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
 	go func() {
-		log.Printf("\n✅ NexLog Go server on :%s", port)
-		log.Printf("🔧 Admin panel: http://localhost:%s/admin", port)
-		log.Printf("🔑 Default password: password")
-		log.Printf("💾 Database: %s/nexlog.db", dataDir)
-		log.Printf("⚙️  Goroutine-based, SQLite WAL, in-memory cache\n")
+		logger.Info("✅ NexLog server started", "port", cfg.Port, "env", func() string {
+			if cfg.IsDev { return "development" }; return "production"
+		}())
+		logger.Info("🔧 Admin panel", "url", "http://localhost:"+cfg.Port+"/admin")
+		logger.Info("🔑 Default password: password  ← change immediately!")
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Server error: %v", err)
+			logger.Error("Server fatal error", "err", err)
 		}
 	}()
 
 	<-quit
-	log.Println("🛑 Shutting down gracefully...")
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	logger.Info("🛑 Graceful shutdown...")
+	shutCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	if err := srv.Shutdown(ctx); err != nil {
-		log.Printf("Shutdown error: %v", err)
+	if err := srv.Shutdown(shutCtx); err != nil {
+		logger.Error("Shutdown error", "err", err)
 	}
-	log.Println("👋 Server stopped")
-}
-
-func getEnv(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
-}
-
-func generateSecret() string {
-	b := make([]byte, 32)
-	rand.Read(b)
-	return hex.EncodeToString(b)
+	logger.Info("👋 Server stopped")
 }

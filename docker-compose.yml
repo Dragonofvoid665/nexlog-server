@@ -1,43 +1,84 @@
 version: "3.9"
 
 services:
-  nexlog:
-    build: .
-    image: nexlog:latest
-    container_name: nexlog
+  # ─── PostgreSQL ────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: nexlog-postgres
     restart: unless-stopped
-    ports:
-      - "3000:3000"
-    volumes:
-      - nexlog_data:/app/data
-      - nexlog_uploads:/app/public/uploads
     environment:
-      - PORT=3000
-      - DATA_DIR=/app/data
-      - PUBLIC_DIR=/app/public
-      - JWT_SECRET=${JWT_SECRET:-change_me_in_production_use_random_string}
+      POSTGRES_DB: nexlog
+      POSTGRES_USER: nexlog
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nexlog -d nexlog"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     deploy:
       resources:
         limits:
-          cpus: "2.0"
-          memory: 1800M
-        reservations:
-          cpus: "0.5"
-          memory: 256M
+          cpus: "0.8"
+          memory: 512M
+
+  # ─── NexLog App ────────────────────────────────────────────────────────────
+  nexlog:
+    build: .
+    image: nexlog:latest
+    container_name: nexlog-app
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    volumes:
+      - uploads_data:/app/public/uploads
+    environment:
+      PORT: "3000"
+      DATABASE_URL: postgres://nexlog:${POSTGRES_PASSWORD}@postgres:5432/nexlog?sslmode=disable
+      JWT_SECRET: ${JWT_SECRET}
+      PUBLIC_DIR: /app/public
+      MIGRATIONS_DIR: /app/migrations
+      APP_ENV: production
+      DB_MAX_OPEN: "50"
+      DB_MAX_IDLE: "25"
+      RATE_LIMIT_PER_MIN: "120"
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/content"]
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/health"]
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 10s
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.2"
+          memory: 1200M
     logging:
       driver: "json-file"
       options:
         max-size: "50m"
         max-file: "3"
 
+  # ─── Redis (optional, for scaling) — enable with: docker compose --profile cache up
+  redis:
+    image: redis:7-alpine
+    container_name: nexlog-redis
+    restart: unless-stopped
+    profiles: ["cache"]
+    command: redis-server --maxmemory 128mb --maxmemory-policy allkeys-lru --save ""
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+
 volumes:
-  nexlog_data:
-    driver: local
-  nexlog_uploads:
-    driver: local
+  postgres_data:
+  uploads_data:
+  redis_data:
